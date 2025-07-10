@@ -234,6 +234,7 @@ class Receiver:
         logging.info("Saved %s (%d bytes)", fname, len(data))
         self.sess.send_ctrl("ACK", fname, tf.total)
         del self.transfers[fname]
+        os._exit(0)
 
     def run(self):
         logging.info("Receiver ready – waiting for files")
