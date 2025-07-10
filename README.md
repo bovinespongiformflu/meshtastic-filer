@@ -1,3 +1,3 @@
 A small meshtastic utility designed to send files via meshtastic channels.
 
-currently a WIP and not for use!
+works with small files, USE IN PRIVATE CHANNELS ONLY!
