@@ -211,7 +211,7 @@ class Receiver:
                         logging.info("NAK %s – %d chunks", fname, len(missing))
                     tf.last_rx = now
     
-    def _chunk_nak(missing_list):
+    def _chunk_nak(self, missing_list):
         """Yield comma-joined chunks whose UTF-8 length ≤ MAX_CTRL_DATA_LEN."""
         batch = []
         length = 0
