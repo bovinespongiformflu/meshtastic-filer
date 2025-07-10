@@ -47,16 +47,20 @@ import threading
 from pathlib import Path
 from typing import Dict, List
 
-from pubsub import pub  # Meshtastic‑python requirement
+from pubsub import pub  # Meshtastic-python requirement
 from meshtastic.tcp_interface import TCPInterface
+from meshtastic import portnums_pb2
+
+TEXT_PORT_VALUES = {portnums_pb2.TEXT_MESSAGE_APP, "TEXT_MESSAGE_APP"}
 
 # ───────── CONFIGURABLE CONSTANTS ─────────────────────────────────────────
 MESH_NODE_IP = "192.168.0.127"  # default TCP host
-CHANNEL_SLOT = 0                 # channel index 0‑7
-CHUNK_SIZE = 200                 # ≤228 bytes recommended
+CHANNEL_SLOT = 0                 # channel index 0-7
+CHUNK_SIZE = 180                 # ≤228 bytes recommended
 RTS_INTERVAL_SEC = 10            # resend RTS until CTS
-TX_DELAY_SEC = 0.25              # inter‑DATA delay
-NAK_INTERVAL_SEC = 5             # gap check interval
+TX_DELAY_SEC = 1.00              # inter-DATA delay
+NAK_INTERVAL_SEC = 20             # gap check interval
+MAX_CTRL_DATA_LEN = 180         #max NAK size
 # -------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -83,9 +87,13 @@ class MeshSession:
     @staticmethod
     def extract_text(pkt: dict) -> str:
         try:
-            if pkt.get("decoded", {}).get("portnum") != "TEXT_MESSAGE_APP":
+            dec = pkt.get("decoded", {})
+            if dec.get("portnum") not in TEXT_PORT_VALUES:
                 return ""
-            hex_payload = pkt["decoded"].get("payload", "")
+            txt = dec.get("text")
+            if txt is not None:
+                return txt
+            hex_payload = dec.get("payload", "")
             return bytes.fromhex(hex_payload).decode("utf-8", "ignore")
         except Exception:
             return ""
@@ -103,8 +111,10 @@ class Sender:
         self.cts_event = threading.Event()
         pub.subscribe(self._on_rx, "meshtastic.receive")
 
-    # Meshtastic publishes keyword args packet=..., interface=...
     def _on_rx(self, packet=None, interface=None):
+        dec = (packet or {}).get("decoded", {})
+        if dec.get("channelIndex", 0) != self.sess.ch:
+            return
         text = self.sess.extract_text(packet or {})
         if not text:
             return
@@ -161,6 +171,9 @@ class Receiver:
         threading.Thread(target=self._gap_check, daemon=True).start()
 
     def _on_rx(self, packet=None, interface=None):
+        dec = (packet or {}).get("decoded", {})
+        if dec.get("channelIndex", 0) != self.sess.ch:
+            return
         txt = self.sess.extract_text(packet or {})
         if not txt:
             return
@@ -192,10 +205,25 @@ class Receiver:
                     continue
                 if now - tf.last_rx >= NAK_INTERVAL_SEC:
                     missing = [str(i) for i in range(tf.total) if i not in tf.chunks]
+                    for payload in self._chunk_nak(missing):
+                        self.sess.send_ctrl("NAK", fname, tf.total, -1, payload)
                     if missing:
-                        self.sess.send_ctrl("NAK", fname, tf.total, -1, ",".join(missing))
                         logging.info("NAK %s – %d chunks", fname, len(missing))
                     tf.last_rx = now
+    
+    def _chunk_nak(missing_list):
+        """Yield comma-joined chunks whose UTF-8 length ≤ MAX_CTRL_DATA_LEN."""
+        batch = []
+        length = 0
+        for idx in missing_list:
+            part_len = len(idx) + (1 if batch else 0)   # +1 for comma
+            if length + part_len > MAX_CTRL_DATA_LEN:
+                yield ",".join(batch)
+                batch, length = [], 0
+            batch.append(idx)
+            length += part_len
+        if batch:
+            yield ",".join(batch)
 
     def _assemble(self, fname: str):
         tf = self.transfers[fname]
@@ -216,7 +244,6 @@ class Receiver:
             logging.info("Receiver stopped.")
 
 # ───────── CLI -------------------------------------------------------------
-
 def main():
     global CHUNK_SIZE
 
